@@ -27,6 +27,10 @@ values.
 | `JARVIS_RELEASE_IMAGE` | digest-pinned image reference (ADR-0011) |
 | `ANTHROPIC_ADMIN_API_KEY`, `OPENAI_ADMIN_API_KEY` | platform administration keys used only to create per-tenant scopes and keys (ADR-0014); never used for inference |
 | `MODEL_PROVIDERS_ENABLED` | comma list, default `anthropic,openai` |
+| `COMPUTER_PROVIDER` | `hosted`, `fly` (later), or `fake` |
+| `COMPUTER_PROVIDER_API_KEY`, `COMPUTER_PROVIDER_PROJECT_ID` | hosted browser provider project for this ATLAS environment (ADR-0016) |
+| `COMPUTER_IDLE_MINUTES`, `COMPUTER_MAX_SESSION_MINUTES` | defaults 5 and 60 (OD-19) |
+| `COMPUTER_DOWNLOAD_MAX_MB`, `COMPUTER_DOWNLOAD_ALLOWED_TYPES` | download policy (OD-21) |
 
 ## Routine operations
 
@@ -116,6 +120,22 @@ logs each destroyed resource by opaque reference and writes an audit event.
   `modelGatewayBypass` entitlement, which injects the tenant's provider key
   directly into the runtime and redeploys. Metering falls back to
   reconciliation only; clear the flag and redeploy once resolved.
+
+## The agent's computer
+
+- A tenant reports "Jarvis is stuck in the browser": open the tenant's
+  computer view, check whether a human holds control (a forgotten takeover
+  blocks the agent until the grant expires), end the session if needed.
+- Reset a tenant's browser logins on request from an owner: use the
+  dashboard action as that owner, or the operator endpoint with a memo;
+  both are audited.
+- Provider outage: sessions fail to create; the agent receives a plain
+  "browser unavailable" tool error and continues without it. Watch the
+  `computer.session_create_failed` counter.
+- Rotate `COMPUTER_PROVIDER_API_KEY`: create a new key in the provider
+  project, update, deploy, revoke the old one; running sessions continue
+  because the provider authenticates sessions, not keys, at the CDP layer
+  (verify with the provider).
 
 ## Sleeping runtimes and wake
 

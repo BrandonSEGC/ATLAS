@@ -165,6 +165,37 @@ with restart first.
 - Tests: PD-06, PD-07, PD-08 (all stages), PD-09, TI-07, TI-08, PV-07;
   staging checklist items 4, 6, 7.
 
+## Slice 6a: The agent's computer
+
+Deliverable: Jarvis can browse the web in a per-tenant remote browser whose
+logins persist; when it hits a login or 2FA wall a member finishes the step
+from the ATLAS Computer page and Jarvis continues; browser minutes appear in
+credits.
+
+Depends on Jarvis J10 (Playwright MCP in the image, `computer` alias from
+`ATLAS_COMPUTER_CDP_URL`, prompt rules) and J2 (actor and conversation
+headers). Depends on slice 6 (projection and MCP hosting pattern).
+
+- `packages/computer`: `BrowserProvider` interface, `HostedBrowserProvider`
+  for the chosen provider, `FakeBrowserProvider`; profiles, sessions,
+  grants repositories.
+- CDP WebSocket broker route with auth, credit pre-check, session
+  attach/create, minute metering, idle and max-duration sweeps.
+- `atlas__computer` MCP server (status, request_human_help, end_session,
+  list_downloads, fetch_download, reset_profile) and its projection entry.
+- Slack help message posting through the tenant bot token into the
+  originating thread.
+- Dashboard Computer page: live view embed, take over, hand back, end
+  session, reset logins, session history; Slack-link landing page.
+- Price book SKU `computer_minute`; provisioning sets
+  `ATLAS_COMPUTER_CDP_URL`.
+- Tests: CU-01..CU-14; staging checklist item 7a.
+
+Follow-on (not in the milestone): member-owned personal profiles;
+self-hosted `FlyBrowserProvider` (headful Chrome on a per-tenant machine
+with noVNC live view); per-tenant domain allow/deny lists; download
+scanning; recordings retention controls.
+
 ## Slice 7: Usage, credential rotation, deletion, hardening
 
 Deliverable: operator capabilities from the acceptance criteria are complete;
@@ -205,7 +236,8 @@ appear in the ledger idempotently; optional auto-top-up.
 Payment collection (slice 8, immediately after), Slack Marketplace listing,
 native MCP OAuth, fleet-wide automatic upgrades, full support dashboard,
 Enterprise Grid org-wide installs, mobile, migration of existing Jarvis
-deployments, a second hosting provider adapter. Usage metering, pricing,
+deployments, a second hosting provider adapter, self-hosted browser
+backend and personal browser profiles. Usage metering, pricing,
 credits, and enforcement are **in** the milestone (slice 4a) per the product
 owner's decision; only the payment step is deferred. Extension points already
 present: `subscriptions` table and suspension state, `connections.provider`

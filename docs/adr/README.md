@@ -22,3 +22,4 @@ deletion.
 | [0013](0013-tenant-deletion-and-backups.md) | Deletion state machine, grace window, backup retention | Proposed (needs product confirmation, OD-1) |
 | [0014](0014-model-gateway-and-credits.md) | Per-tenant model provider keys, ATLAS model gateway, credit metering | Accepted (product owner decision) |
 | [0015](0015-runtime-hosting-provider.md) | Runtime hosting provider selection: Fly Machines first, Kubernetes second tier, wake-on-event, independent backups | Proposed (recommendation, OD-12) |
+| [0016](0016-agent-computer.md) | A per-tenant remote browser ("computer") brokered by ATLAS with human takeover | Accepted |

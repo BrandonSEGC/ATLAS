@@ -341,6 +341,46 @@ Allowed upstream paths per provider are an allow-list (for example Anthropic
 `/v1/responses`, `/v1/embeddings`, `/v1/audio/transcriptions`,
 `/v1/images/generations`). Anything else returns 404.
 
+### Computer: `GET /computer/v1/cdp` (WebSocket, `runtime`)
+
+Brokered CDP endpoint for the tenant's remote browser (ADR-0016,
+`docs/computer.md`). Auth by runtime token (header preferred, `token` query
+parameter accepted). Behaviour: resolve the tenant's shared profile, credit
+pre-check for 5 minutes of `computer_minute`, attach to the active session
+or create one, proxy frames, meter each minute, idle timer on last
+disconnect. Refusals close the socket with code `4401` (auth), `4402`
+(credits), `4409` (tenant suspended or runtime not ready), `4429` (session
+limit).
+
+### Computer MCP server: `/mcp/v1/computer` (`runtime`)
+
+MCP Streamable HTTP server implemented by ATLAS (not proxied). Projected
+into every runtime as alias `atlas__computer`. Tools:
+
+| Tool | Input | Output |
+| --- | --- | --- |
+| `status` | none | `{ session: { id, startedAt, minutes, humanInControl } \| null, profile: { loginsPersisted: true } }` |
+| `request_human_help` | `{ reason: string (<= 300 chars) }` | waits up to 15 minutes; `{ outcome: "handed_back" \| "expired" \| "declined", note?: string }`. Requires `X-Atlas-Actor-Slack-User-Id`; posts to the originating conversation using `X-Atlas-Conversation-Id` and thread headers supplied by the runtime (J2). |
+| `end_session` | none | `{ ended: true }` |
+| `list_downloads` | none | `{ files: [{ id, name, bytes, createdAt }] }` |
+| `fetch_download` | `{ id }` | streams the file into the runtime workspace via the runtime admin file API; `{ path: "attachments/computer/<name>" }`. Refuses types and sizes outside policy (OD-21). |
+| `reset_profile` | none | requires an approval grant from an owner/admin created in the dashboard within the last 15 minutes; `{ reset: true }` |
+
+### Dashboard computer routes (`session`)
+
+```text
+GET    /api/computer                      # profile + active session summary + last 20 sessions
+GET    /api/computer/live-view            # { url, expiresAt } for the active session; requires an open takeover grant for members, always allowed for owner/admin
+POST   /api/computer/take-over            # sets controlled_by_member_id (409 if another member holds control)
+POST   /api/computer/hand-back            # body { note? }; completes the grant; releases control
+POST   /api/computer/end-session
+POST   /api/computer/profile/reset        # owner/admin; creates the approval grant and performs the reset
+GET    /api/computer/grants/:id           # member's own grant; used by the Slack link landing page
+```
+
+Operator: `GET /api/operator/tenants/:tenantId/computer` (sessions,
+minutes, end reasons, no live view).
+
 ### `GET /api/credits`
 
 Session. `{ "balanceMicros": 12500000, "balanceDisplay": "1,250 credits",
@@ -420,6 +460,8 @@ failures -> `degraded`; one success -> `ready`.
 | `runtime.idle_sweep` | scheduled every 5 min | `{}` | stops runtimes with `last_activity_at` older than the idle window, no active deliveries, and `always_on = false` |
 | `usage.meter_runtime_hours` | scheduled hourly | `{}` | writes `runtime_hour.<class>` usage and debits |
 | `credits.notify_thresholds` | `tenant:<tenantId>:credits-notify` | `{ tenantId, level }` | 3 attempts |
+| `computer.session_sweep` | scheduled every minute | `{}` | ends sessions past idle or max duration, meters the final minute, expires takeover grants |
+| `computer.fetch_download` | `download:<sessionId>:<fileId>` | `{ tenantId, sessionId, fileId, runtimeId }` | 3 attempts |
 | `billing.reconcile` | scheduled daily | `{}` fan-out per tenant and provider | 3 attempts |
 | `runtime.destroy` | `tenant:<tenantId>:lifecycle` | `{ tenantId, runtimeId }` | 10 attempts; requires `tenants.status = deleting` and `purge_after < now()` |
 | `connection.sync` | `connection:<connectionId>:sync` | `{ tenantId, connectionId }` | 3 attempts |

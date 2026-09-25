@@ -505,6 +505,63 @@ CREATE TABLE credit_balances (
 (nullable; NULL when the SKU had no price at the time) and
 `provider_request_id text` inside `dimensions` for reconciliation.
 
+### computer_profiles, computer_sessions, computer_takeover_grants
+
+Per-tenant remote browser (ADR-0016). Profiles follow the connection
+ownership model; v1 creates only the tenant profile.
+
+```sql
+CREATE TABLE computer_profiles (
+  id                    uuid PRIMARY KEY,
+  tenant_id             uuid NOT NULL REFERENCES tenants(id),
+  owner_type            text NOT NULL CHECK (owner_type IN ('tenant','member')),
+  owner_member_id       uuid,
+  provider              text NOT NULL CHECK (provider IN ('hosted','fly','fake')),
+  provider_context_ref  text,                  -- provider's persistent context / profile identifier
+  status                text NOT NULL CHECK (status IN ('active','resetting','deleted')),
+  created_at            timestamptz NOT NULL,
+  updated_at            timestamptz NOT NULL,
+  CHECK ((owner_type = 'tenant' AND owner_member_id IS NULL) OR (owner_type = 'member' AND owner_member_id IS NOT NULL)),
+  FOREIGN KEY (tenant_id, owner_member_id) REFERENCES members (tenant_id, id)
+);
+CREATE UNIQUE INDEX computer_profiles_tenant_shared ON computer_profiles (tenant_id) WHERE owner_type = 'tenant' AND status <> 'deleted';
+CREATE UNIQUE INDEX computer_profiles_member ON computer_profiles (tenant_id, owner_member_id) WHERE owner_type = 'member' AND status <> 'deleted';
+
+CREATE TABLE computer_sessions (
+  id                    uuid PRIMARY KEY,
+  tenant_id             uuid NOT NULL REFERENCES tenants(id),
+  profile_id            uuid NOT NULL REFERENCES computer_profiles(id),
+  runtime_id            uuid NOT NULL REFERENCES runtime_instances(id),
+  provider_session_ref  text NOT NULL,
+  status                text NOT NULL CHECK (status IN ('active','idle','ended','failed')),
+  controlled_by_member_id uuid,                -- set while a human has taken over
+  started_at            timestamptz NOT NULL,
+  last_activity_at      timestamptz NOT NULL,
+  ended_at              timestamptz,
+  end_reason            text,                  -- idle, max_duration, agent, human, credits, error
+  metered_minutes       int NOT NULL DEFAULT 0,
+  cdp_connections       int NOT NULL DEFAULT 0,
+  FOREIGN KEY (tenant_id, controlled_by_member_id) REFERENCES members (tenant_id, id)
+);
+CREATE UNIQUE INDEX computer_sessions_one_active ON computer_sessions (profile_id) WHERE status IN ('active','idle');
+
+CREATE TABLE computer_takeover_grants (
+  id                    uuid PRIMARY KEY,
+  tenant_id             uuid NOT NULL REFERENCES tenants(id),
+  session_id            uuid NOT NULL REFERENCES computer_sessions(id),
+  member_id             uuid NOT NULL,
+  reason                text NOT NULL,          -- agent-supplied, length-limited, shown to the member
+  slack_channel_id      text,
+  slack_thread_ts       text,
+  created_at            timestamptz NOT NULL,
+  expires_at            timestamptz NOT NULL,
+  opened_at             timestamptz,
+  handed_back_at        timestamptz,
+  note                  text,
+  FOREIGN KEY (tenant_id, member_id) REFERENCES members (tenant_id, id)
+);
+```
+
 ### reconciliation_runs
 
 ```sql
@@ -535,7 +592,8 @@ Applied to: `members`, `slack_installations`, `sessions`, `runtime_instances`,
 `slack_event_deliveries`, `subscriptions`, `audit_events` (tenant rows),
 `usage_events`, `secrets` (tenant rows), `tenant_keys`,
 `model_provider_scopes`, `credit_ledger`, `credit_balances`,
-`reconciliation_runs`.
+`reconciliation_runs`, `computer_profiles`, `computer_sessions`,
+`computer_takeover_grants`.
 
 ```sql
 ALTER TABLE connections ENABLE ROW LEVEL SECURITY;

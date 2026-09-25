@@ -24,6 +24,11 @@ slice that depends on them.
 | OD-15 | Low-credit behaviour details | Thresholds at 20 / 5 / 0 percent of last top-up; DM to every owner; no grace below zero (`allowNegativeUntilMicros = 0`) | Slice 4a | Customer experience when credits run out |
 | OD-16 | Idle stop window | 30 minutes without inbound events, gateway calls, or active runs; tenants with scheduled tasks are `always_on`; the plan may sell `always_on` as an entitlement | Slice 4 | Idle cost versus first-reply latency |
 | OD-17 | Which model providers to enable at launch | Anthropic and OpenAI through the gateway; Fireworks behind a flag | Slice 4a | Provider scope creation and price book scope |
+| OD-18 | Browser backend for the agent's computer | Hosted browser provider (persistent contexts, interactive live view, downloads API) behind `BrowserProvider`; self-hosted Fly machine backend later (ADR-0016) | Slice 6a | Time to market, privacy posture, per-minute cost |
+| OD-19 | Session limits | 1 concurrent session per tenant profile; 5 minute idle timeout; 60 minute max, auto-extended while the agent is active; `computer_minute` priced at provider hourly cost / 60 x markup | Slice 6a | Cost, fairness, and abuse |
+| OD-20 | Tool mode | Accessibility-snapshot tools (Playwright MCP) by default; vision/screenshot mode enabled as a fallback capability | Slice 6a | Reliability and token cost |
+| OD-21 | Downloads and recordings | Allow documents, spreadsheets, images, archives up to 50 MB; refuse executables and scripts; session recordings disabled by default (enable per tenant on request) | Slice 6a | Malware risk, privacy, storage cost |
+| OD-22 | Whose browser logins are shared | v1 has one shared company profile per tenant (owner/admin can reset); personal member profiles follow later with the connection ownership rules | Slice 6a | Privacy inside a company; confused-deputy risk |
 
 ## Technical questions to verify during implementation (not product decisions)
 
@@ -42,6 +47,12 @@ slice that depends on them.
   for reconciliation, during slice 4a. Where an API is missing, the
   operator-assisted path creates the key by hand and pastes it once into an
   operator form that stores it encrypted.
+- Confirm, for the chosen browser provider, during slice 6a: persistent
+  context API, whether connect URLs can be session-scoped (lets ATLAS avoid
+  proxying CDP), interactive live view embedding rules (iframe allowed?),
+  downloads API, and whether Playwright MCP's current release accepts
+  custom headers for `--cdp-endpoint` (otherwise a short-lived capability
+  token in the URL, rotated with the runtime token).
 - Confirm exact usage field names for streaming responses per provider
   (Anthropic `message_start`/`message_delta`, OpenAI final usage chunk with
   `stream_options`) against current API docs during slice 4a.

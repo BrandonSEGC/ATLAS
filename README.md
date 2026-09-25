@@ -25,6 +25,7 @@ each other. Read them in this order:
 | [`docs/data-model.md`](docs/data-model.md) | PostgreSQL schema, tenancy invariants, and migration conventions |
 | [`docs/api-contracts.md`](docs/api-contracts.md) | HTTP API, webhook, runtime, model gateway, and job/event contracts |
 | [`docs/credits-and-billing.md`](docs/credits-and-billing.md) | Metering points, price book, credit ledger, enforcement, statements, pass-through |
+| [`docs/computer.md`](docs/computer.md) | The agent's remote browser: concepts, flow, ATLAS and Jarvis pieces, provider setup |
 | [`docs/threat-model.md`](docs/threat-model.md) | Threats, mitigations, and pre-pilot requirements |
 | [`docs/test-plan.md`](docs/test-plan.md) | Required automated tests mapped to modules |
 | [`docs/implementation-plan.md`](docs/implementation-plan.md) | Ordered vertical slices for the first milestone |

@@ -159,6 +159,30 @@ usage blocks, errors, and latency, and records the auth header it received.
 | CR-18 | Idle sweep stops a runtime only when `last_activity_at` is old, no deliveries are queued, and `always_on=false`; a queued event for a `stopped` runtime enqueues `runtime.wake`, and the delivery completes after `FakeRuntime` reports healthy. | Worker |
 | CR-19 | `usage.meter_runtime_hours` writes `runtime_hour.<class>` usage only for hours the runtime was `ready`/`degraded`/`starting`, not `stopped` or `suspended`. | Worker |
 
+## 6b. Computer (`CU-*`)
+
+`FakeBrowserProvider` in `packages/testing` implements `BrowserProvider` in
+memory, exposes a tiny CDP-speaking WebSocket server that answers
+`Target.getTargets` and `Browser.getVersion`, records which context each
+session was created with, and serves fake downloads and live-view URLs.
+
+| ID | Test | Layer |
+| --- | --- | --- |
+| CU-01 | Runtime A's first CDP connect creates one profile and one session for tenant A with A's provider context; a second concurrent connect attaches to the same session (no second provider session). | Route |
+| CU-02 | Runtime B connecting never receives tenant A's session or context (fake records distinct context refs). | Route |
+| CU-03 | Invalid or revoked runtime token closes the socket with `4401`; suspended tenant with `4409`; zero credits with `4402`, and no provider session is created. | Route |
+| CU-04 | CDP frames are proxied byte-for-byte in both directions (sentinel payloads). | Route |
+| CU-05 | Each metered minute writes one `computer_minute` usage event and ledger debit; disconnect then 5 idle minutes ends the provider session with `end_reason = idle` and meters the final partial minute. | Worker |
+| CU-06 | Max duration reached ends the session with `end_reason = max_duration`; the agent's next connect creates a fresh session on the same profile. | Worker |
+| CU-07 | `request_human_help` without `X-Atlas-Actor-Slack-User-Id` is refused; with it, one grant is created, one Slack message is posted in the originating thread with an ATLAS URL (never a provider URL), and the tool call resolves when `POST /api/computer/hand-back` is called by that member with the note echoed back. | Route |
+| CU-08 | Grant expiry resolves the tool call with `expired`; a different member cannot use the grant (404); owner/admin can open live view without a grant. | Route |
+| CU-09 | `take-over` by member A then `take-over` by member B returns 409; agent CDP frames are held while A controls and flushed after hand-back. | Route |
+| CU-10 | `fetch_download` refuses disallowed types and oversize files; allowed file is written to the runtime workspace through `FakeRuntime`'s admin file API and the path is returned. | Route |
+| CU-11 | `reset_profile` without a fresh owner/admin approval grant is refused; with it, the provider context is deleted and a new one is created; sessions on the old context are ended. | Route |
+| CU-12 | Runtime restart (new CDP connect from the same runtime after `FakeRuntime` restarts) reuses the same profile: logins persist. | Route |
+| CU-13 | Dashboard `GET /api/computer` for tenant A never lists tenant B's sessions; members see their own grants only. | Route |
+| CU-14 | Projection includes `atlas__computer` for every runtime and the `ATLAS_COMPUTER_CDP_URL` variable is set at provisioning; no provider API key appears in variables (extends PV-08). | Worker |
+
 ## 7. Staging end-to-end checklist (manual, before pilot)
 
 1. Fresh Slack dev workspace: Add to Slack -> onboarding page shows
@@ -180,6 +204,12 @@ usage blocks, errors, and latency, and records the auth header it received.
     confirm it wakes and replies.
 7. Ask, as the member, for a personal-connection tool; verify success for the
    owner and the safe prompt for another user.
+7a. Ask Jarvis to fetch a document from a synthetic portal (a test site on
+    `example.com` infrastructure you control) that requires a login. Confirm
+    the help request arrives in the thread, the ATLAS Computer page shows the
+    live browser, log in, hand back, and receive the file in Slack. Restart
+    the runtime and repeat: no login should be needed. Check the Credits page
+    for browser minutes and confirm another tenant's Computer page is empty.
 8. Operator: view tenant, retry provisioning on a deliberately failed tenant,
    suspend and resume, rotate runtime credentials, run diagnostics with a
    revoked Pipedream account and confirm the stage reported.
