@@ -1,0 +1,22 @@
+# Dependencies and build output
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Local environment and runtime data
+.env
+.env.*
+!.env.example
+data/
+tmp/
+scratch/
+memory/
+memory-bank/
+
+# Editor and OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/*
+!.vscode/extensions.json
