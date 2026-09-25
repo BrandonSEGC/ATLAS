@@ -212,13 +212,15 @@ Secrets are never selected by the generic repository layer; only
 CREATE TABLE runtime_instances (
   id                     uuid PRIMARY KEY,
   tenant_id              uuid NOT NULL REFERENCES tenants(id) UNIQUE,   -- one runtime per tenant in v1
-  provider               text NOT NULL CHECK (provider IN ('railway','fake')),
+  provider               text NOT NULL CHECK (provider IN ('fly','kubernetes','railway','fake')),
   provider_service_ref   text,                  -- opaque provider service identifier
   provider_volume_ref    text,
   provider_state         jsonb NOT NULL DEFAULT '{}'::jsonb,  -- step markers for retry-safe provisioning, no secrets
   release                text NOT NULL,          -- image reference incl. digest, e.g. ghcr.io/example/jarvis@sha256:...
-  status                 text NOT NULL CHECK (status IN ('requested','provisioning','ready','degraded','suspended','failed','destroying','destroyed')),
+  status                 text NOT NULL CHECK (status IN ('requested','provisioning','ready','degraded','stopped','starting','suspended','failed','destroying','destroyed')),
   status_reason          text,
+  always_on              boolean NOT NULL DEFAULT false,   -- never idle-stopped (scheduled tasks, heartbeat)
+  last_activity_at       timestamptz,                      -- last inbound event or gateway call; drives idle stop
   ingress_url            text,                   -- private URL, e.g. http://runtime-<id>.railway.internal:3002
   resource_class         text NOT NULL,
   region                 text,
@@ -425,6 +427,102 @@ CREATE TABLE usage_events (
 CREATE INDEX usage_events_tenant_time ON usage_events (tenant_id, occurred_at);
 ```
 
+### model_provider_scopes
+
+One provider-side scope (workspace/project) and key per tenant per provider
+(ADR-0014). The key is a secret reference; the scope identifier is
+non-secret.
+
+```sql
+CREATE TABLE model_provider_scopes (
+  id                  uuid PRIMARY KEY,
+  tenant_id           uuid NOT NULL REFERENCES tenants(id),
+  provider            text NOT NULL CHECK (provider IN ('anthropic','openai','fireworks')),
+  provider_scope_ref  text,                     -- workspace / project identifier at the provider
+  api_key_secret_ref  uuid NOT NULL,
+  status              text NOT NULL CHECK (status IN ('active','rotating','revoked')),
+  created_at          timestamptz NOT NULL,
+  rotated_at          timestamptz,
+  UNIQUE (tenant_id, provider)
+);
+```
+
+### price_book_versions and price_book_items
+
+Platform-scoped.
+
+```sql
+CREATE TABLE price_book_versions (
+  id             uuid PRIMARY KEY,
+  effective_from timestamptz NOT NULL UNIQUE,
+  created_by     text NOT NULL,
+  notes          text,
+  created_at     timestamptz NOT NULL
+);
+
+CREATE TABLE price_book_items (
+  version_id        uuid NOT NULL REFERENCES price_book_versions(id),
+  sku               text NOT NULL,             -- model.anthropic.<model>.input, tool_call.pipedream, runtime_hour.standard, ...
+  unit              text NOT NULL,             -- token, call, hour, gb_hour, user_month
+  unit_cost_micros  bigint NOT NULL,           -- provider cost per unit in micro-USD
+  unit_price_micros bigint NOT NULL,           -- tenant price per unit in micro-USD
+  markup_basis      text NOT NULL,             -- factor:1.25 | flat | manual
+  PRIMARY KEY (version_id, sku)
+);
+```
+
+### credit_ledger and credit_balances
+
+```sql
+CREATE TABLE credit_ledger (
+  id                    uuid PRIMARY KEY,
+  tenant_id             uuid NOT NULL REFERENCES tenants(id),
+  occurred_at           timestamptz NOT NULL,
+  entry_type            text NOT NULL CHECK (entry_type IN ('purchase','grant','debit','adjustment','refund','expiry')),
+  amount_micros         bigint NOT NULL,          -- negative for debits and expiry
+  balance_after_micros  bigint NOT NULL,
+  usage_event_id        uuid,                     -- set for debits
+  price_version_id      uuid REFERENCES price_book_versions(id),
+  reference_type        text,                     -- payment_intent, invoice, operator_grant, ...
+  reference_id          text,
+  actor_type            text NOT NULL CHECK (actor_type IN ('system','member','operator','payment_provider')),
+  actor_id              text,
+  memo                  text,
+  UNIQUE (tenant_id, reference_type, reference_id)  -- idempotent purchases and grants
+);
+CREATE INDEX credit_ledger_tenant_time ON credit_ledger (tenant_id, occurred_at DESC);
+
+CREATE TABLE credit_balances (
+  tenant_id             uuid PRIMARY KEY REFERENCES tenants(id),
+  balance_micros        bigint NOT NULL DEFAULT 0,
+  last_topup_micros     bigint NOT NULL DEFAULT 0,   -- basis for percentage thresholds
+  last_notified_level   text CHECK (last_notified_level IN ('20','5','0')),
+  updated_at            timestamptz NOT NULL
+);
+```
+
+`usage_events` gains `priced_micros bigint` and `cost_micros bigint`
+(nullable; NULL when the SKU had no price at the time) and
+`provider_request_id text` inside `dimensions` for reconciliation.
+
+### reconciliation_runs
+
+```sql
+CREATE TABLE reconciliation_runs (
+  id              uuid PRIMARY KEY,
+  tenant_id       uuid NOT NULL REFERENCES tenants(id),
+  provider        text NOT NULL,
+  period_start    timestamptz NOT NULL,
+  period_end      timestamptz NOT NULL,
+  ledger_cost_micros   bigint NOT NULL,
+  provider_cost_micros bigint,
+  drift_micros    bigint,
+  status          text NOT NULL CHECK (status IN ('ok','drift','provider_unavailable')),
+  created_at      timestamptz NOT NULL,
+  UNIQUE (tenant_id, provider, period_start)
+);
+```
+
 ### Job queue
 
 pg-boss owns the `pgboss` schema. Job payloads reference rows by ID and carry
@@ -435,7 +533,9 @@ pg-boss owns the `pgboss` schema. Job payloads reference rows by ID and carry
 Applied to: `members`, `slack_installations`, `sessions`, `runtime_instances`,
 `runtime_service_tokens`, `connections`, `provider_external_users`,
 `slack_event_deliveries`, `subscriptions`, `audit_events` (tenant rows),
-`usage_events`, `secrets` (tenant rows), `tenant_keys`.
+`usage_events`, `secrets` (tenant rows), `tenant_keys`,
+`model_provider_scopes`, `credit_ledger`, `credit_balances`,
+`reconciliation_runs`.
 
 ```sql
 ALTER TABLE connections ENABLE ROW LEVEL SECURITY;
@@ -467,4 +567,5 @@ non-sensitive columns.
 | `slack_event_deliveries.raw_body` | cleared on delivery; 24 hours max for failures |
 | `audit_events` | 400 days |
 | `usage_events` | 400 days (aggregate before purge when billing exists) |
+| `credit_ledger` | indefinite (financial record); tenant rows survive deletion in anonymized form |
 | tenant data after deletion request | ADR-0013 |

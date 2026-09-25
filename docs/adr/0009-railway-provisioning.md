@@ -1,6 +1,8 @@
 # ADR-0009: Railway GraphQL API adapter behind `RuntimeProvisioner`
 
-Status: Accepted
+Status: Superseded as the first provider by ADR-0015 (Fly Machines). The
+`RuntimeProvisioner` interface defined here remains the contract; the Railway
+adapter described below is optional and not part of the first milestone.
 
 ## Context
 

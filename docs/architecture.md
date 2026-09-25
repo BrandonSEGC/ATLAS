@@ -20,7 +20,7 @@ ATLAS is the control plane. Jarvis is the data plane.
 
 ATLAS never runs a shared multi-tenant agent, never reads a tenant workspace,
 and never persists customer conversation content or model reasoning. Jarvis
-never holds platform-wide credentials (Pipedream developer client, Railway
+never holds platform-wide credentials (Pipedream developer client, hosting provider
 token, Slack signing secret of the distributed app).
 
 The Jarvis repository stays independent. ATLAS provisions a versioned Jarvis
@@ -54,8 +54,14 @@ Supporting infrastructure:
 - Encrypted secret storage: a PostgreSQL table written only through
   `packages/secrets` using envelope encryption (ADR-0007). No external KMS is
   required for the pilot; the interface allows one later.
-- Provisioning provider: Railway via its public GraphQL API (ADR-0009), behind
-  the provider-neutral `RuntimeProvisioner` interface.
+- Provisioning provider: Fly.io Machines (ADR-0015; one microVM and volume
+  per tenant, private network, API-driven stop/start) behind the
+  provider-neutral `RuntimeProvisioner` interface. Kubernetes is the
+  documented second adapter; Railway (ADR-0009) is optional.
+- Per-tenant workspace backups to object storage, independent of the
+  provider volume (ADR-0015).
+- Model providers reached only through the ATLAS model gateway with
+  per-tenant provider keys and real-time credit metering (ADR-0014).
 
 ## 3. Module map
 
@@ -71,9 +77,11 @@ allowed dependencies:
 | `auth` | Slack install OAuth, Sign in with Slack (OIDC), sessions, role checks. | database, secrets, contracts |
 | `slack-gateway` | Raw-body signature verification, URL verification, dedup, tenant resolution, self-echo rejection, enqueue delivery. | database, contracts |
 | `runtime-client` | Authenticated calls to a runtime: forward event, push projection, health, and the runtime-facing MCP broker auth. | database, secrets, contracts |
-| `provisioning` | `RuntimeProvisioner` interface, state machine, idempotency, `RailwayProvisioner`, `FakeProvisioner`. | database, secrets, contracts |
+| `provisioning` | `RuntimeProvisioner` interface, state machine (incl. stop/wake), idempotency, `FlyProvisioner`, `FakeProvisioner`; later `KubernetesProvisioner`. | database, secrets, contracts |
 | `connections` | Pipedream Connect Links, account sync, connection ownership rules, MCP broker, staged diagnostics. | database, secrets, contracts |
-| `usage` | Ingest runtime usage reports and platform-side usage (external users, accounts, uptime). | database |
+| `model-gateway` | Provider proxy, per-provider usage parsers, credit pre-check, per-tenant provider scope and key management. | database, secrets, contracts, billing |
+| `billing` | Price book, credit ledger and balances, statements, threshold notifications, reconciliation. | database, audit |
+| `usage` | Usage event ingestion from gateway, broker, worker, and optional runtime reports. | database, billing |
 | `audit` | Append-only audit events with metadata allow-list. | database |
 | `jobs` | pg-boss wiring, job names, retry policies, idempotency keys. | database, contracts |
 | `apps/control-plane` | Fastify server composition, routes, worker bootstrap, dashboard UI. | all of the above |
@@ -86,7 +94,7 @@ Rules:
   so a missing tenant cannot be defaulted.
 - Only `secrets` touches ciphertext. Everything else deals in opaque
   `SecretRef` values.
-- Provider SDKs (Slack Web API, Railway GraphQL, Pipedream REST/MCP) are
+- Provider SDKs (Slack Web API, Fly Machines API, Pipedream REST/MCP, model provider APIs) are
   wrapped by a small interface with a fake implementation in the same package,
   used by tests.
 
@@ -198,7 +206,8 @@ ATLAS injects into that runtime only (section 6.3).
 requested -> provisioning -> ready
                  |-> failed (retryable via POST /api/runtime/retry)
 ready <-> degraded (health checks)
-ready|degraded -> suspended -> ready (resume)
+ready|degraded -> stopped (idle sweep) -> starting (wake on event) -> ready
+ready|degraded|stopped -> suspended -> ready (resume)
 suspended -> destroying -> destroyed
 ```
 
@@ -206,11 +215,11 @@ Steps, each retry-safe and each recorded in `runtime_instances.provider_state`:
 
 1. Generate per-runtime secrets if absent: forwarding secret (Slack v0 HMAC
    key), admin token, runtime service token (ATLAS stores only its hash),
-   `JARVIS_MASTER_KEY`, and the model provider key for this tenant
-   (ADR-0007, open decision OD-3).
+   and `JARVIS_MASTER_KEY` (ADR-0007). Ensure the tenant's model provider
+   scope and key exist (ADR-0014); the key stays in ATLAS.
 2. `provisioner.provision()` with the idempotency key: create or find the
-   service, attach or find the volume mounted at `/data`, set variables,
-   pin the image reference to the current Jarvis release, deploy.
+   machine, attach or find the volume mounted at `/data`, set variables,
+   pin the image reference to the current Jarvis release, start.
 3. Poll `GET /health` on the private ingress until it returns `ok` or the
    deadline passes.
 4. Push the configuration projection (section 6.4) and mark `ready`.
@@ -221,6 +230,33 @@ between `ready` and `degraded`. `runtime.suspend` stops the service; the
 gateway checks tenant and runtime status before enqueuing delivery, so
 suspended tenants receive nothing. `runtime.destroy` runs only from
 `tenants.status = deleting` and after the retention window (ADR-0013).
+
+Idle stop and wake-on-event (ADR-0015): `runtime.idle_sweep` stops runtimes
+with no activity for the idle window (default 30 minutes) unless
+`always_on` is set. A `stopped` runtime is a routable target: the gateway
+still queues the delivery, and the delivery worker enqueues `runtime.wake`,
+which calls `provisioner.resume()`, waits for `/health`, marks `ready`, and
+releases pending deliveries. Wake latency is a few seconds on Fly Machines;
+the customer sees a slightly delayed first reply, never a lost message.
+Before every image upgrade and hourly while running, the workspace is backed
+up to per-tenant object storage.
+
+### 5.4a Model calls and credits
+
+Every model call from a runtime goes through the ATLAS model gateway
+(ADR-0014, `docs/credits-and-billing.md`):
+
+```text
+Jarvis --ANTHROPIC_BASE_URL=https://atlas/model/v1/anthropic, x-api-key=<runtime token>-->
+ATLAS gateway: auth -> credit pre-check -> forward with the TENANT's provider key
+            -> stream back -> parse usage -> usage_event + credit_ledger debit
+```
+
+The tenant's provider key is created by ATLAS in a per-tenant provider scope
+and never leaves ATLAS. When the balance cannot cover a request the gateway
+returns a provider-shaped 402, Jarvis tells the user credits are exhausted,
+and ATLAS DMs the owners. Slack, tools, and the runtime keep working so the
+owner can top up.
 
 ### 5.5 Pipedream connection
 
@@ -307,15 +343,18 @@ tenant and generated by ATLAS unless noted.
 | `JARVIS_ADMIN_TOKEN` | Per-runtime admin token used by ATLAS for projection pushes. |
 | `JARVIS_MASTER_KEY` | Per-runtime key for `.jarvis/secrets.json`. |
 | `ATLAS_BASE_URL`, `ATLAS_RUNTIME_ID`, `ATLAS_RUNTIME_TOKEN`, `ATLAS_TENANT_ID` | Runtime -> ATLAS identity and the MCP broker/usage endpoints. |
-| Model provider key | Per-tenant key (OD-3). |
+| `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `FIREWORKS_BASE_URL` | `https://<atlas>/model/v1/<provider>`: all model traffic goes through the ATLAS gateway (ADR-0014). |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | Set to the runtime service token; the gateway swaps in the tenant's real provider key. No real provider key is ever in the runtime. |
+| `MOM_MODEL_PROVIDER`, `MOM_MODEL_ID` | Default model from the tenant's plan. |
 
 The broker bearer token for each projected `mcp-http` connector is delivered
 through the projection push (admin API), which stores it in the runtime's own
 encrypted `.jarvis/secrets.json` and hydrates `JARVIS_MCP_<ID>_TOKEN` at boot.
 It is the same runtime service token; no per-connection secret exists.
 
-Never injected: Pipedream developer credentials, Railway token, distributed
-Slack app client secret or signing secret, platform database credentials.
+Never injected: model provider keys, Pipedream developer credentials, the
+hosting provider's API token, distributed Slack app client secret or signing
+secret, platform database credentials.
 
 ### 6.4 Configuration projection
 
@@ -402,17 +441,19 @@ ATLAS milestone slices note which ones they depend on.
 | J2 | Include `X-Atlas-Actor-Slack-User-Id` (and channel ID) on MCP requests made during a turn, sourced from the authenticated inbound event, and honour the `ownership` block so personal tools are offered only to their owner. | Personal connections (slice 6). |
 | J3 | Optional: reject `/slack/events` requests whose `X-Atlas-Runtime-Id` does not match `ATLAS_RUNTIME_ID`. Defense in depth only. | Post-pilot. |
 | J4 | `GET /version` returning the release identifier (`JARVIS_RELEASE` baked at image build). | Operator view; optional for pilot. |
-| J5 | Post `model_usage` records to `ATLAS_BASE_URL/internal/runtimes/:id/usage` with the runtime token, batched, at-least-once with a client event ID. | Usage metering before billing; optional for pilot. |
+| J5 | Post `model_usage` records to `ATLAS_BASE_URL/internal/runtimes/:id/usage` with the runtime token, batched, at-least-once with a client event ID. | Optional telemetry only; the ATLAS model gateway is the authoritative meter (ADR-0014). |
 | J6 | CI workflow publishing `ghcr.io/<org>/jarvis:<semver>` and `:sha-<commit>` on tagged releases, with `HEALTHCHECK` and `JARVIS_RELEASE` in the image. | Slice 4 (provisioning) needs a pullable image. |
 | J7 | Startup warning when `MOM_SLACK_BOT_TOKEN` is set without an app token already selects webhook mode; confirm `--adapter=slack:webhook` is passed explicitly by ATLAS so auto-detection changes cannot alter behaviour. | Slice 4. |
+| J8 | Fast cold start: keep image size and Chrome start-up low so wake-on-event feels instant; expose an "activity" signal (active run, due scheduled task) on an admin endpoint so ATLAS's idle sweep never stops a busy runtime. | Slice 4 wake-on-event polish. |
+| J9 | Workspace backup hook: admin endpoint or sidecar that writes a consistent archive of the workspace to a presigned object-storage URL supplied by ATLAS. | Slice 4 (backups). |
 
 ## 7. Environments
 
 | Environment | Purpose | Slack app | Pipedream env | Provider |
 | --- | --- | --- | --- | --- |
-| local | developer machine, `FakeProvisioner`, fake Slack/Pipedream servers | dev app or none | development | none / docker |
-| staging | end-to-end with real Slack dev app and Railway | dev app | development | Railway staging pool |
-| production | customers | distributed app | production | Railway production pool |
+| local | developer machine, `FakeProvisioner`, fake Slack/Pipedream/model servers | dev app or none | development | none / docker |
+| staging | end-to-end with real Slack dev app and a staging Fly organization | dev app | development | Fly staging org |
+| production | customers | distributed app | production | Fly production org |
 
 `ATLAS_ENV` selects defaults; `config` refuses to start production with
 development Pipedream environment, HTTP callbacks, or missing key material.
@@ -423,7 +464,9 @@ development Pipedream environment, HTTP callbacks, or missing key material.
   names and token-shaped prefixes (`xoxb-`, `xapp-`, `xoxe`, `Bearer `).
   Slack event bodies are not logged by default.
 - Metrics counters: events received/dropped by reason, deliveries
-  succeeded/failed, provisioning transitions, broker calls by stage.
+  succeeded/failed, provisioning transitions, wake latency, broker calls by
+  stage, model gateway requests by provider and outcome, credit refusals,
+  reconciliation drift.
 - Operator endpoints (`/api/operator/*`, ADR-0006 operator role) expose
   tenant and runtime status, provisioning retry, suspend/resume, safe audit
   events, and staged diagnostics. See `docs/operations.md`.

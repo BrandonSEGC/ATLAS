@@ -6,9 +6,10 @@ ATLAS is the commercial control plane that sells and operates isolated
 [Jarvis](https://github.com/BrandonSEGC/Jarvis) AI-agent runtimes for
 contractor companies. ATLAS owns signup, Slack installation and login, tenant
 and member identity, Pipedream Connect, runtime provisioning, central Slack
-event routing, usage metering, and audit. Each customer receives a dedicated
-Jarvis runtime and persistent volume; ATLAS never runs a shared multi-tenant
-agent.
+event routing, model-call metering and credits, and audit. Each customer
+receives a dedicated Jarvis runtime and persistent volume; ATLAS never runs a
+shared multi-tenant agent, and every model and tool call is metered through
+ATLAS so provider fees are attributed and passed through per tenant.
 
 ## Status
 
@@ -22,7 +23,8 @@ each other. Read them in this order:
 | [`docs/architecture.md`](docs/architecture.md) | System architecture, module boundaries, runtime contract, findings from the Jarvis codebase |
 | [`docs/repository-structure.md`](docs/repository-structure.md) | Proposed monorepo layout and dependency rules |
 | [`docs/data-model.md`](docs/data-model.md) | PostgreSQL schema, tenancy invariants, and migration conventions |
-| [`docs/api-contracts.md`](docs/api-contracts.md) | HTTP API, webhook, runtime, and job/event contracts |
+| [`docs/api-contracts.md`](docs/api-contracts.md) | HTTP API, webhook, runtime, model gateway, and job/event contracts |
+| [`docs/credits-and-billing.md`](docs/credits-and-billing.md) | Metering points, price book, credit ledger, enforcement, statements, pass-through |
 | [`docs/threat-model.md`](docs/threat-model.md) | Threats, mitigations, and pre-pilot requirements |
 | [`docs/test-plan.md`](docs/test-plan.md) | Required automated tests mapped to modules |
 | [`docs/implementation-plan.md`](docs/implementation-plan.md) | Ordered vertical slices for the first milestone |

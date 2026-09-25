@@ -15,8 +15,10 @@ deletion.
 | [0006](0006-sessions-and-roles.md) | Server-side sessions in PostgreSQL; roles; operator flag | Accepted |
 | [0007](0007-secret-encryption-and-rotation.md) | Envelope encryption with a master key ring and per-tenant DEKs | Accepted |
 | [0008](0008-job-queue.md) | pg-boss for provisioning, delivery, and maintenance jobs | Accepted |
-| [0009](0009-railway-provisioning.md) | Railway GraphQL API adapter behind `RuntimeProvisioner` | Accepted |
+| [0009](0009-railway-provisioning.md) | Railway GraphQL API adapter behind `RuntimeProvisioner` | Superseded as first provider by 0015 (interface retained; Railway adapter optional) |
 | [0010](0010-private-runtime-authentication.md) | Per-runtime credentials: HMAC forwarding secret, admin token, service token | Accepted |
 | [0011](0011-jarvis-release-registry.md) | Jarvis images published to GHCR and pinned by digest | Accepted |
 | [0012](0012-slack-scopes.md) | Initial Slack bot and sign-in scopes | Accepted |
 | [0013](0013-tenant-deletion-and-backups.md) | Deletion state machine, grace window, backup retention | Proposed (needs product confirmation, OD-1) |
+| [0014](0014-model-gateway-and-credits.md) | Per-tenant model provider keys, ATLAS model gateway, credit metering | Accepted (product owner decision) |
+| [0015](0015-runtime-hosting-provider.md) | Runtime hosting provider selection: Fly Machines first, Kubernetes second tier, wake-on-event, independent backups | Proposed (recommendation, OD-12) |

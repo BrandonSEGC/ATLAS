@@ -32,6 +32,7 @@ ATLAS/
           webhooks/            # /webhooks/slack/events, /webhooks/pipedream
           internal/            # /internal/runtimes/:id/usage, /heartbeat
           mcp/                 # /mcp/v1/connections/:connectionId (broker)
+          model/               # /model/v1/:provider/* (model gateway)
         http/
           session-auth.ts      # cookie -> session -> TenantContext + role
           runtime-auth.ts      # bearer -> runtime service token hash -> RuntimeContext
@@ -53,17 +54,20 @@ ATLAS/
     auth/                      # slack install oauth, slack oidc login, sessions, roles, oauth_states
     slack-gateway/             # verify, parse-minimal, dedup, resolve, self-echo, enqueue
     runtime-client/            # forwardSlackEvent, pushProjection, health; HMAC signer
-    provisioning/              # RuntimeProvisioner, state machine, RailwayProvisioner, FakeProvisioner
+    provisioning/              # RuntimeProvisioner, state machine (stop/wake), FlyProvisioner, FakeProvisioner
     connections/               # pipedream client, connect links, account sync, ownership policy, broker, diagnostics
-    usage/                     # usage_events ingestion
+    model-gateway/             # provider proxy, usage parsers, credit pre-check, per-tenant provider scopes and keys
+    billing/                   # price book, credit ledger and balances, statements, thresholds, reconciliation
+    usage/                     # usage_events ingestion from gateway, broker, worker, optional runtime reports
     audit/                     # audit_events writer with metadata allow-list
     jobs/                      # pg-boss setup, job names, idempotency keys, handlers registry
-    testing/                   # fake slack server, fake pipedream server, fake runtime, fixtures (synthetic only)
+    testing/                   # fake slack, fake pipedream, fake model provider, fake runtime, fixtures (synthetic only)
   docs/
     architecture.md
     repository-structure.md
     data-model.md
     api-contracts.md
+    credits-and-billing.md
     threat-model.md
     test-plan.md
     implementation-plan.md
@@ -79,7 +83,9 @@ ATLAS/
 ```text
 contracts <- config <- database <- secrets
                                      ^
-   auth, slack-gateway, runtime-client, provisioning, connections, usage, audit, jobs
+   auth, slack-gateway, runtime-client, provisioning, connections, audit, jobs, billing
+                                     ^
+                      model-gateway, usage (depend on billing)
                                      ^
                               apps/control-plane
 ```

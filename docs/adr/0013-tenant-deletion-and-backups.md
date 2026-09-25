@@ -39,7 +39,7 @@ Backups:
   retention plus daily snapshots retained 30 days. Deleted tenants can
   therefore appear in backups for up to 30 days after purge; this is
   disclosed in customer terms.
-- Runtime volumes: whatever the provider offers (Railway volume backups) at
+- Runtime volumes: provider snapshots plus the ATLAS object-storage workspace backups (ADR-0015) at
   the platform's configured schedule; retention capped at 30 days. Restores
   are operator-initiated and audited.
 - Secrets in backups are ciphertext; a restored database without the master

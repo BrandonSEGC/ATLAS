@@ -20,10 +20,13 @@ values.
 | `ATLAS_MASTER_KEYS` | JSON key ring (ADR-0007) |
 | `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `SLACK_SIGNING_SECRET`, `SLACK_APP_ID` | distributed app |
 | `PIPEDREAM_CLIENT_ID`, `PIPEDREAM_CLIENT_SECRET`, `PIPEDREAM_PROJECT_ID`, `PIPEDREAM_ENVIRONMENT`, `PIPEDREAM_WEBHOOK_SECRET` | platform Connect project |
-| `PROVISIONER` | `railway` or `fake` |
-| `RAILWAY_API_TOKEN`, `RAILWAY_PROJECT_ID`, `RAILWAY_ENVIRONMENT_ID` | provider pool for this ATLAS environment |
+| `PROVISIONER` | `fly`, `kubernetes`, `railway`, or `fake` |
+| `FLY_API_TOKEN`, `FLY_ORG_SLUG`, `FLY_REGION`, `FLY_RUNTIME_APP` | Fly organization and app that holds tenant machines for this ATLAS environment |
+| `RUNTIME_IDLE_MINUTES` | idle window before stop (default 30) |
+| `BACKUP_BUCKET_URL`, `BACKUP_CREDENTIALS_REF` | per-tenant workspace backups |
 | `JARVIS_RELEASE_IMAGE` | digest-pinned image reference (ADR-0011) |
-| `MODEL_PROVIDER_*` | per OD-3 |
+| `ANTHROPIC_ADMIN_API_KEY`, `OPENAI_ADMIN_API_KEY` | platform administration keys used only to create per-tenant scopes and keys (ADR-0014); never used for inference |
+| `MODEL_PROVIDERS_ENABLED` | comma list, default `anthropic,openai` |
 
 ## Routine operations
 
@@ -78,7 +81,9 @@ All rotations are operator actions and never display new values.
 | Slack signing secret | regenerate in the Slack app settings, update `SLACK_SIGNING_SECRET`, deploy (Slack accepts both during a short overlap only if the app supports it; otherwise expect a brief 401 window that Slack retries) |
 | Slack client secret | regenerate, update `SLACK_CLIENT_SECRET`, deploy; in-flight OAuth states will fail and users restart the flow |
 | Pipedream client secret | create a new OAuth client secret in the Connect project, update, deploy, then revoke the old one |
-| Railway token | create a new token, update, deploy, revoke the old one |
+| Hosting provider token | create a new token, update, deploy, revoke the old one |
+| Per-tenant model provider key | `POST /api/operator/tenants/:id/model-scopes/rotate`: creates a new key in the tenant's provider scope, swaps it in the gateway, revokes the old one at the provider; no runtime change needed |
+| Provider administration keys | rotate at the provider, update, deploy; they are used only during provisioning and rotation |
 | Tenant bot token | happens through reinstall by the customer; ATLAS updates the runtime variable and redeploys |
 
 ## Deletion
@@ -94,6 +99,30 @@ logs each destroyed resource by opaque reference and writes an audit event.
   key ring, verify, then cut over. Sessions and OAuth states are discarded.
 - Runtime volumes: provider snapshots; restore is per tenant and requires
   the runtime to be suspended first.
+
+## Credits and pricing
+
+- Grant pilot credits: `POST /api/operator/tenants/:id/credits/grant` with a
+  memo and a unique `referenceId` (for example the internal ticket number)
+  so retries cannot double-grant.
+- Publish new prices: create a price book version with `effectiveFrom` in
+  the future; history is never re-priced. Announce to tenants before the
+  effective time.
+- Investigate a drift alert: open the reconciliation row, compare the
+  provider's report for the tenant scope with the ledger for the same day;
+  common causes are provider price changes not yet in the price book and
+  usage the provider reports in a different timezone bucket.
+- Incident bypass: if the gateway is degraded, an operator can set a tenant's
+  `modelGatewayBypass` entitlement, which injects the tenant's provider key
+  directly into the runtime and redeploys. Metering falls back to
+  reconciliation only; clear the flag and redeploy once resolved.
+
+## Sleeping runtimes and wake
+
+Runtimes show `Sleeping` after the idle window. A Slack message wakes them;
+if wake fails twice the runtime moves to `Needs attention` and the delivery
+stays queued for the retry schedule. Tenants with scheduled tasks are marked
+`always_on` in the tenant detail and are never stopped.
 
 ## Incident notes
 

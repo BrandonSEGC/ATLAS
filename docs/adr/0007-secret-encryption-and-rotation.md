@@ -39,7 +39,7 @@ read them, and keys must be rotatable without downtime.
     row `retired_at`; callers that need overlap (runtime service tokens) keep
     both valid for a grace window.
 - Provider-side rotation runbooks (Slack signing secret, Pipedream client
-  secret, Railway token) are in `docs/operations.md`.
+  secret, hosting provider token) are in `docs/operations.md`.
 
 ## Consequences
 

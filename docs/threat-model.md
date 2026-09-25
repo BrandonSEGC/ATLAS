@@ -14,7 +14,7 @@ general availability.
 
 1. Tenant Slack bot tokens (full read/write in the customer's workspace).
 2. Platform credentials: distributed Slack app client secret and signing
-   secret, Pipedream developer client credentials, Railway API token, master
+   secret, Pipedream developer client credentials, hosting provider API token, provider administration keys, master
    encryption keys, database credentials.
 3. Per-runtime credentials: forwarding secret, admin token, runtime service
    token, `JARVIS_MASTER_KEY`, model provider key.
@@ -28,7 +28,7 @@ general availability.
 
 ```text
 Internet -> ATLAS public HTTPS (auth, dashboard API, webhooks, MCP broker, usage)
-ATLAS -> Slack, Pipedream, Railway APIs (platform credentials)
+ATLAS -> Slack, Pipedream, hosting provider, model provider APIs (platform credentials)
 ATLAS -> tenant runtime private ingress (per-runtime credentials)
 tenant runtime -> ATLAS (runtime service token), Slack (tenant bot token), model provider (tenant key)
 operator browser -> ATLAS operator API (session + operator flag)
@@ -188,14 +188,18 @@ execution inside a tenant runtime.
 
 Blast radius by design (M1):
 
-- Credentials present: that tenant's bot token, that tenant's model key, the
-  per-runtime admin token and master key, and the runtime service token that
-  only authorizes that tenant's connections and usage endpoint.
-- Credentials absent: Pipedream developer client, Railway token, platform
-  Slack secrets, database credentials, other tenants' anything.
+- Credentials present: that tenant's bot token, the per-runtime admin token
+  and master key, and the runtime service token that only authorizes that
+  tenant's connections, model gateway traffic (credit-limited), and usage
+  endpoint.
+- Credentials absent: any model provider key, Pipedream developer client,
+  hosting provider token, platform Slack secrets, database credentials,
+  other tenants' anything.
 - Network: runtime has no inbound public ingress; it can reach ATLAS's
-  runtime-facing endpoints, Slack, the model provider, and Pipedream through
-  the broker only.
+  runtime-facing endpoints, Slack, and (through ATLAS) model providers and
+  Pipedream only.
+- Spend: bounded by the tenant's credit balance because every model call is
+  metered at the gateway.
 - Detection: unusual tool-call volume, health flaps, and usage spikes are
   visible to operators; suspend stops the service and revokes the runtime
   token.
@@ -266,6 +270,50 @@ Mitigations: Jarvis images referenced by digest, published from the Jarvis
 repository CI only (J6); dependency lockfiles; M2 image signature
 verification and SBOM.
 
+### T16. Credit bypass and metering evasion
+
+Attack: a runtime reaches a model provider without being metered (direct
+provider URL, a second key), or manipulates requests so the gateway
+under-counts (disabling usage in streams, abusing unmetered endpoints).
+
+Mitigations (M1):
+
+- No provider key exists inside the runtime; the runtime's "API key" is its
+  ATLAS service token, which providers reject. Egress allow-listing at the
+  hosting provider (M2) closes the direct-URL path for a compromised runtime
+  that somehow obtains a key.
+- The gateway allow-lists upstream paths and forces
+  `stream_options.include_usage`; requests to unknown paths are refused.
+- Usage is parsed from the provider's authoritative usage block, not from
+  the request. Aborted streams are debited from cumulative usage received.
+- Daily reconciliation against provider cost reports per tenant scope flags
+  drift.
+- Concurrency and rate limits per tenant bound overrun.
+
+### T17. Model gateway as a high-value target
+
+Attack: the gateway holds every tenant's provider key in decryptable form and
+sees every prompt in transit.
+
+Mitigations (M1): keys are decrypted per request and never cached beyond the
+request; prompts and completions are not logged or persisted (only usage
+metadata and provider request IDs); gateway logs redact bodies; per-tenant
+keys mean a leaked key is one tenant's and is revocable at the provider
+without touching others. M2: separate the gateway role onto its own
+replicas with a narrower database role that can read only
+`model_provider_scopes`, `runtime_service_tokens`, and the credit tables.
+
+### T18. Financial integrity of the ledger
+
+Attack or defect: double debits from retried requests, forged purchases,
+operator error.
+
+Mitigations (M1): ledger is append-only with `balance_after` computed under
+row lock; purchases and grants are idempotent on
+`(tenant_id, reference_type, reference_id)`; every non-system entry has an
+actor and an audit event; statements are derived, never edited; operator
+grants above a configurable amount require a second operator (M2).
+
 ## Pre-pilot checklist (M1)
 
 - [ ] All T1 to T14 M1 items implemented with tests referenced in
@@ -273,7 +321,7 @@ verification and SBOM.
 - [ ] Platform secrets live only in the deployment secret manager; none in
       the repository or CI logs.
 - [ ] Rotation runbooks exercised once in staging for: Slack signing secret,
-      Pipedream client secret, Railway token, master key, per-runtime
+      Pipedream client secret, hosting provider token, master key, per-runtime
       credentials.
 - [ ] Deletion exercised end to end in staging with a synthetic tenant.
 - [ ] Backup restore of the control-plane database exercised in staging.

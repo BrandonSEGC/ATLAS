@@ -79,25 +79,56 @@ valid forwarding signature; drops are visible to operators.
 
 ## Slice 4: Provisioning job + runtime status
 
-Deliverable: a new installation results in a real Jarvis runtime on the
-Railway staging pool, `Ready` in the dashboard, and Slack DMs answered by
-that runtime.
+Deliverable: a new installation results in a real Jarvis runtime on the Fly
+staging organization, `Ready` in the dashboard, Slack DMs answered by that
+runtime, idle runtimes stopped and woken on the next message, and hourly
+workspace backups in object storage.
 
 Depends on Jarvis J6 (published image) and J7 (explicit
-`--adapter=slack:webhook` verified). Everything else uses existing Jarvis
-behaviour.
+`--adapter=slack:webhook` verified). J8 (fast start, activity signal) and J9
+(backup hook) improve this slice but have interim fallbacks: a longer idle
+window and a backup taken by stopping the machine and snapshotting the
+volume.
 
-- `packages/provisioning`: interface, state machine, `FakeProvisioner`,
-  `RailwayProvisioner` (service, volume, variables, image, deploy, private
-  hostname), resource class mapping.
+- `packages/provisioning`: interface, state machine including
+  `stopped`/`starting`, `FakeProvisioner`, `FlyProvisioner` (machine,
+  volume, secrets/env, image, start/stop, private address), resource class
+  mapping.
 - Per-runtime credential generation and storage; `runtime_service_tokens`.
 - `runtime.provision` handler with step markers; health polling; `ready`.
 - `runtime.health_check` scheduled job; `degraded` transitions.
+- `runtime.idle_sweep`, `runtime.wake`, and the delivery worker's wake path.
+- Workspace backup job to per-tenant object storage; operator restore.
 - `runtime.suspend` / `runtime.resume`; operator suspend/resume/retry;
   `POST /api/runtime/retry`.
-- Per-tenant model provider key handling per OD-3 default.
-- Dashboard: runtime status with plain-language states and retry button.
-- Tests: PV-01..PV-04, PV-06, PV-08, PV-09; staging checklist items 1, 2, 5.
+- Dashboard: runtime status with plain-language states (Preparing, Ready,
+  Sleeping, Waking, Needs attention, Suspended) and retry button.
+- Tests: PV-01..PV-04, PV-06, PV-08, PV-09, CR-18; staging checklist items
+  1, 2, 5.
+
+## Slice 4a: Model gateway + credits
+
+Deliverable: every model call from a runtime is proxied by ATLAS using a
+per-tenant provider key, metered, priced, and debited; owners see balance
+and usage; exhausted credits stop model calls with a plain message and DM
+the owners.
+
+No Jarvis change required (base URL environment variables already exist).
+
+- `packages/billing`: price book, ledger, balances, statements, threshold
+  notifications; operator grant/adjust routes; initial price book version
+  seeded from a checked-in synthetic example and published by an operator
+  with real provider prices.
+- `packages/model-gateway`: provider scope and key management (provider
+  admin API where available, operator-assisted otherwise), proxy with
+  streaming, usage parsers for Anthropic and OpenAI-compatible formats,
+  credit pre-check, per-tenant limits, path allow-list.
+- Provisioning sets the runtime's base URLs and token-as-key variables.
+- `usage.meter_runtime_hours` and tool-call metering in the MCP broker
+  (broker lands in slice 6; the SKU and hook are prepared here).
+- Dashboard: Credits page (balance, burn, usage by SKU, ledger, statements);
+  operator credit views.
+- Tests: CR-01..CR-17, CR-19; staging checklist item 6a.
 
 ## Slice 5: Pipedream link + connection status
 
@@ -139,14 +170,25 @@ with restart first.
 Deliverable: operator capabilities from the acceptance criteria are complete;
 threat model M1 checklist is green.
 
-- `POST /internal/runtimes/:id/usage` and platform-side usage recorders
-  (external users, connected accounts, runtime uptime). Jarvis J5 enables
-  runtime reports; platform-side metrics work without it.
-- Operator credential rotation (per-runtime and master key); rotation
-  runbooks in `docs/operations.md` exercised in staging.
+- `POST /internal/runtimes/:id/usage` (optional runtime telemetry, J5),
+  platform-side usage recorders for external users, connected accounts,
+  and storage; `billing.reconcile` daily job against provider cost reports.
+- Operator credential rotation (per-runtime, master key, per-tenant provider
+  keys); rotation runbooks in `docs/operations.md` exercised in staging.
 - Deletion state machine per ADR-0013; `runtime.destroy`; purge job.
 - Rate limits reviewed; response schema secret scan in CI; log review.
-- Tests: TI-09, PV-05, PV-10, SC-02; staging checklist items 3, 8, 9.
+- Tests: TI-09, PV-05, PV-10, SC-02, CR-14; staging checklist items 3, 8, 9.
+
+## Slice 8 (first post-milestone): Credit purchase
+
+Deliverable: owners buy credit packs through a hosted checkout; purchases
+appear in the ledger idempotently; optional auto-top-up.
+
+- Payment provider integration behind a `PaymentProvider` interface with a
+  fake; webhook writes `purchase` entries keyed by payment reference.
+- Dashboard "Add credits" flow; receipts; refund handling as `refund`
+  entries.
+- The ledger, statements, and enforcement from slice 4a are unchanged.
 
 ## Exit criteria for the milestone
 
@@ -160,9 +202,12 @@ threat model M1 checklist is green.
 
 ## Explicitly not in this plan
 
-Billing collection, Slack Marketplace listing, native MCP OAuth, fleet-wide
-automatic upgrades, full support dashboard, Enterprise Grid org-wide
-installs, usage-based pricing, mobile, migration of existing Jarvis
-deployments. Extension points already present: `subscriptions` table and
-suspension state, `connections.provider` check constraint, `updateRelease` on
-the provisioner, `RUNTIME_CONTRACT_VERSION`, usage ledger.
+Payment collection (slice 8, immediately after), Slack Marketplace listing,
+native MCP OAuth, fleet-wide automatic upgrades, full support dashboard,
+Enterprise Grid org-wide installs, mobile, migration of existing Jarvis
+deployments, a second hosting provider adapter. Usage metering, pricing,
+credits, and enforcement are **in** the milestone (slice 4a) per the product
+owner's decision; only the payment step is deferred. Extension points already
+present: `subscriptions` table and suspension state, `connections.provider`
+check constraint, `updateRelease` on the provisioner,
+`RUNTIME_CONTRACT_VERSION`, ledger `purchase` entry type.

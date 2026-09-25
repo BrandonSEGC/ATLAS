@@ -319,6 +319,54 @@ Implements the MCP Streamable HTTP transport as a reverse proxy:
   written.
 - Timeouts: 30 s request, 5 min SSE idle.
 
+### Model gateway: `/model/v1/:provider/*` (`runtime`)
+
+Reverse proxy to the model providers (ADR-0014). The runtime is configured
+with `ANTHROPIC_BASE_URL=https://<atlas>/model/v1/anthropic` and its runtime
+service token as the API key value, so authentication arrives as
+`x-api-key` (Anthropic) or `Authorization: Bearer` (OpenAI-compatible); both
+are accepted and mapped to the runtime.
+
+| Step | Behaviour |
+| --- | --- |
+| auth | token hash -> `(tenant_id, runtime_id)`; runtime `ready`/`degraded`; tenant `active`; otherwise 401 in the provider's error envelope |
+| credit check | `balance >= estimate` else 402 with provider-shaped body (Anthropic `{"type":"error","error":{"type":"billing_error","message":"..."}}`; OpenAI `{"error":{"code":"insufficient_quota","message":"..."}}`) |
+| limits | per-tenant concurrent requests and requests per minute from entitlements; 429 in provider format |
+| forward | path suffix, method, body, and headers passed through except auth headers, which are replaced with the tenant's provider key; `stream_options.include_usage=true` injected for OpenAI streams |
+| meter | usage parsed from the response; `usage_events` + `credit_ledger` debit written on completion; provider request ID recorded |
+| errors | provider errors passed through unchanged (status and body); no debit |
+
+Allowed upstream paths per provider are an allow-list (for example Anthropic
+`/v1/messages`, `/v1/messages/count_tokens`; OpenAI `/v1/chat/completions`,
+`/v1/responses`, `/v1/embeddings`, `/v1/audio/transcriptions`,
+`/v1/images/generations`). Anything else returns 404.
+
+### `GET /api/credits`
+
+Session. `{ "balanceMicros": 12500000, "balanceDisplay": "1,250 credits",
+"burn7dMicros": ..., "burn30dMicros": ..., "lowThresholdReached": null }`.
+Members receive balance fields only; owner/admin also receive
+`usageByPeriod` (current month by SKU with quantity and priced amount).
+
+### `GET /api/credits/ledger?cursor=`
+
+Owner/admin. Paginated ledger entries without `actor_id` for system entries.
+
+### `GET /api/credits/statements/:yyyy-mm`
+
+Owner/admin. Statement per `docs/credits-and-billing.md`.
+
+### Operator credit routes
+
+```text
+POST /api/operator/tenants/:tenantId/credits/grant        # body { amountMicros, memo, referenceId }  (idempotent on referenceId)
+POST /api/operator/tenants/:tenantId/credits/adjust       # body { amountMicros, memo, referenceId }
+GET  /api/operator/tenants/:tenantId/credits/reconciliation
+GET  /api/operator/price-book                             # versions and items
+POST /api/operator/price-book/versions                    # body { effectiveFrom, notes, items: [...] }
+POST /api/operator/tenants/:tenantId/model-scopes/rotate  # rotate the tenant's provider key
+```
+
 ## 5. ATLAS -> runtime calls (`packages/runtime-client`)
 
 ### Forward Slack event
@@ -368,6 +416,11 @@ failures -> `degraded`; one success -> `ready`.
 | `runtime.health_check` | scheduled every 60 s | `{}` fan-out per ready runtime | none |
 | `runtime.deliver_slack_event` | `event:<eventId>` | `{ deliveryId, tenantId, runtimeId }` | schedule in section 5 |
 | `runtime.suspend` / `runtime.resume` | `tenant:<tenantId>:lifecycle` | `{ tenantId, runtimeId, reason }` | 5 attempts |
+| `runtime.wake` | `tenant:<tenantId>:lifecycle` | `{ tenantId, runtimeId }` | 5 attempts; `stopped -> starting -> ready`, then re-enqueues pending deliveries |
+| `runtime.idle_sweep` | scheduled every 5 min | `{}` | stops runtimes with `last_activity_at` older than the idle window, no active deliveries, and `always_on = false` |
+| `usage.meter_runtime_hours` | scheduled hourly | `{}` | writes `runtime_hour.<class>` usage and debits |
+| `credits.notify_thresholds` | `tenant:<tenantId>:credits-notify` | `{ tenantId, level }` | 3 attempts |
+| `billing.reconcile` | scheduled daily | `{}` fan-out per tenant and provider | 3 attempts |
 | `runtime.destroy` | `tenant:<tenantId>:lifecycle` | `{ tenantId, runtimeId }` | 10 attempts; requires `tenants.status = deleting` and `purge_after < now()` |
 | `connection.sync` | `connection:<connectionId>:sync` | `{ tenantId, connectionId }` | 3 attempts |
 | `maintenance.purge` | scheduled hourly | `{}` | none |

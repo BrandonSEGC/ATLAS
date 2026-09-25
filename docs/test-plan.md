@@ -11,7 +11,7 @@ appear in test names so coverage can be audited against this document.
 | Unit | `node --test` via `tsx` | none | `packages/*/test` |
 | Repository / RLS | `node --test` | disposable PostgreSQL with real migrations | `packages/database/test` |
 | Route | `node --test` with Fastify `inject` | PostgreSQL, fakes for Slack, Pipedream, provisioner, runtime | `apps/control-plane/test` |
-| End to end (staging) | manual checklist plus a scripted smoke run | real Slack dev app, Pipedream development environment, Railway staging pool | `docs/operations.md` |
+| End to end (staging) | manual checklist plus a scripted smoke run | real Slack dev app, Pipedream development environment, Fly staging organization, provider test keys | `docs/operations.md` |
 
 Fakes live in `packages/testing`:
 
@@ -116,7 +116,7 @@ hostnames `atlas.example.com` and `runtime-a.internal.example`.
 | PV-05 | `runtime.destroy` refuses unless `tenants.status = deleting` and `purge_after < now()`; running it twice is a no-op; volume and service absent afterwards; Pipedream external users deleted. | Worker |
 | PV-06 | Health check: two failed `/health` polls move `ready -> degraded`; one success moves back. | Worker |
 | PV-07 | Projection push is idempotent: identical projection twice results in one restart request to `FakeRuntime`; a changed projection triggers a restart and updates `last_projection_hash`. | Worker |
-| PV-08 | Variables passed to the provisioner never include Pipedream credentials, the platform Slack secrets, or the Railway token (assert against the fake's captured input). | Worker |
+| PV-08 | Variables passed to the provisioner never include Pipedream credentials, the platform Slack secrets, the hosting provider token, or any model provider key (assert against the fake's captured input). | Worker |
 | PV-09 | `POST /api/runtime/retry` is allowed only from `failed`/`degraded` and by owner/admin; enqueues under the same singleton key. | Route |
 | PV-10 | Credential rotation: rotate service token; old token valid during grace, invalid after; new token valid immediately; audit written. | Route/worker |
 
@@ -131,6 +131,34 @@ hostnames `atlas.example.com` and `runtime-a.internal.example`.
 | SC-05 | Config: missing master key ring, HTTP callback URL in production, or unknown `ATLAS_ROLES` fails startup with a clear message and no partial listen. | Unit |
 | SC-06 | `check:public-safety` fails on a fixture containing a non-`example.com` email or a public IP outside RFC 5737. | Script |
 
+## 6a. Model gateway and credits (`CR-*`)
+
+`FakeModelProvider` in `packages/testing` serves Anthropic- and
+OpenAI-shaped responses (streaming and non-streaming) with configurable
+usage blocks, errors, and latency, and records the auth header it received.
+
+| ID | Test | Layer |
+| --- | --- | --- |
+| CR-01 | Runtime A's token on `/model/v1/anthropic/v1/messages` is forwarded with tenant A's provider key (recorded by the fake), never the platform key or another tenant's key. | Route |
+| CR-02 | Non-streaming Anthropic response with `input_tokens=1000, output_tokens=200, cache_read_input_tokens=300, cache_creation_input_tokens=100` produces one usage event and one ledger debit equal to the priced sum per token class from the active price book version. | Route |
+| CR-03 | Streaming Anthropic response (`message_start` + `message_delta` usage) and streaming OpenAI response (final usage chunk) are metered identically to their non-streaming equivalents; `stream_options.include_usage` is injected for OpenAI. | Route |
+| CR-04 | Client aborts mid-stream: debit equals the cumulative usage received so far; no negative or zero debit when tokens were produced. | Route |
+| CR-05 | Balance below estimate: 402 with provider-shaped body, no upstream call, one `credits.notify_thresholds` job for level `0`, owner DM recorded by `FakeSlack`. | Route |
+| CR-06 | Provider 5xx or 4xx: passed through unchanged, no debit, usage event with `outcome=error`. | Route |
+| CR-07 | Unknown upstream path (`/v1/admin/keys`) is refused with 404; no upstream call. | Route |
+| CR-08 | Concurrent requests for one tenant beyond `maxConcurrentModelRequests` receive 429 in provider format. | Route |
+| CR-09 | Two concurrent completions for the same tenant produce two ledger rows with strictly decreasing `balance_after` and a final balance equal to the sum (row lock test). | Repository |
+| CR-10 | Grant with the same `referenceId` twice creates one ledger row. | Route |
+| CR-11 | Price book: usage at `occurred_at` between two versions is priced with the earlier version; publishing a new version does not re-price history. | Unit |
+| CR-12 | Threshold notifications fire once per level (20, 5, 0) and reset after a top-up. | Worker |
+| CR-13 | Statement for a month equals the sum of ledger and usage rows in that period; opening plus entries equals closing. | Repository |
+| CR-14 | Reconciliation: fake provider report differs from ledger cost by more than tolerance -> `drift` row and operator alert; within tolerance -> `ok`. | Worker |
+| CR-15 | Gateway logs and audit contain no request or response body content (assert on captured log lines for a request containing a sentinel string). | Route |
+| CR-16 | Suspended tenant or stopped runtime: gateway refuses with 401 in provider format. | Route |
+| CR-17 | Member sees balance only; owner sees usage by SKU; `GET /api/credits/ledger` is 403 for members. | Route |
+| CR-18 | Idle sweep stops a runtime only when `last_activity_at` is old, no deliveries are queued, and `always_on=false`; a queued event for a `stopped` runtime enqueues `runtime.wake`, and the delivery completes after `FakeRuntime` reports healthy. | Worker |
+| CR-19 | `usage.meter_runtime_hours` writes `runtime_hour.<class>` usage only for hours the runtime was `ready`/`degraded`/`starting`, not `stopped` or `suspended`. | Worker |
+
 ## 7. Staging end-to-end checklist (manual, before pilot)
 
 1. Fresh Slack dev workspace: Add to Slack -> onboarding page shows
@@ -144,6 +172,12 @@ hostnames `atlas.example.com` and `runtime-a.internal.example`.
    reply lands in that thread.
 6. Ask Jarvis to use a read-only tool from the shared connection; verify the
    broker recorded the call with the tenant external user.
+6a. Check the Credits page: the conversation debited the balance with the
+    right token classes; set the balance to zero via an operator adjustment,
+    send a message, confirm Jarvis reports exhausted credits and the owner
+    received a DM; grant credits and confirm recovery. Leave the workspace
+    idle past the idle window, confirm the runtime shows Stopped, send a DM,
+    confirm it wakes and replies.
 7. Ask, as the member, for a personal-connection tool; verify success for the
    owner and the safe prompt for another user.
 8. Operator: view tenant, retry provisioning on a deliberately failed tenant,
